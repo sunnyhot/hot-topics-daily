@@ -39,7 +39,7 @@ node /Users/xufan65/.openclaw/workspace/skills/hot-topics-daily/scripts/push.cjs
 已配置的定时任务：
 - **Cron ID**: `5498e5c4-b707-4524-b8f6-d39f964ef777`
 - **时间**: 每天 08:30（北京时间）
-- **推送位置**: Discord 子区 `1482024661033287771`
+- **推送位置**: Discord 子区 `1482246566055120898`
 
 查看/修改定时任务：
 ```bash

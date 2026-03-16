@@ -7,7 +7,7 @@
 const https = require('https');
 
 // Discord 子区 ID
-const THREAD_ID = "1482024661033287771";
+const THREAD_ID = "1482246566055120898";
 
 // API Base URL
 const API_BASE = "https://60s.viki.moe/v2";
