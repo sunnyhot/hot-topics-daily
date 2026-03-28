@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
- * 每日热搜速览推送脚本
- * 抓取微博、知乎、百度、B站热搜并发送到 Discord
+ * 每日热搜速览推送脚本 v2.0
+ * 抓取微博、知乎、百度、B站、抖音热搜并发送到 Discord
+ * 修复：直接输出到 stdout，由 cron agent 调用 message tool 发送
  */
 
 const https = require('https');
+const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
@@ -15,149 +17,143 @@ try {
   config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 } catch (e) {
   console.error('❌ 配置文件加载失败:', e.message);
-  console.error('请确保 config.json 存在且格式正确');
   process.exit(1);
 }
 
-// Discord 子区 ID
-const THREAD_ID = config.discord.threadId;
-
-// API Base URL
 const API_BASE = config.api.baseUrl;
-const API_TIMEOUT = config.api.timeout;
-
-// 启用的平台
+const API_TIMEOUT = config.api.timeout || 10000;
 const enabledPlatforms = config.platforms.filter(p => p.enabled);
+const itemsPerPlatform = config.display?.itemsPerPlatform || 5;
+const maxTitleLen = config.display?.maxTitleLength || 40;
 
-// HTTP GET 请求
+// HTTP GET（支持 https 和 http）
 function fetch(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, { timeout: API_TIMEOUT }, (res) => {
+    const mod = url.startsWith('https') ? https : http;
+    mod.get(url, { timeout: API_TIMEOUT }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          reject(e);
-        }
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(new Error(`JSON parse error: ${data.slice(0, 100)}`)); }
       });
-    }).on('error', reject);
+    }).on('error', reject)
+      .on('timeout', () => { reject(new Error('timeout')); });
   });
 }
 
-// 格式化微博热搜
-function formatWeibo(data, maxTitleLen, itemsCount) {
+// 格式化各平台
+function formatWeibo(data) {
   if (!data?.data?.length) return [];
-  return data.data.slice(0, itemsCount).map((item, i) => {
-    const hot = Math.floor(item.hot_value / 10000);
-    return `**${i + 1}.** [${item.title}](${item.link}) \`${hot}万\``;
+  return data.data.slice(0, itemsPerPlatform).map((item, i) => {
+    const hot = item.hot_value >= 10000 ? `${(item.hot_value / 10000).toFixed(0)}万` : `${item.hot_value}`;
+    return `**${i + 1}.** [${item.title}](${item.link}) \`${hot}\``;
   });
 }
 
-// 格式化知乎热榜
-function formatZhihu(data, maxTitleLen, itemsCount) {
+function formatZhihu(data) {
   if (!data?.data?.length) return [];
-  return data.data.slice(0, itemsCount).map((item, i) => {
+  return data.data.slice(0, itemsPerPlatform).map((item, i) => {
     const title = item.title.length > maxTitleLen ? item.title.slice(0, maxTitleLen) + '...' : item.title;
-    const hot = item.hot_value_desc?.replace('热度', '').trim() || '';
+    const hot = item.hot_value_desc || '';
     return `**${i + 1}.** [${title}](${item.link}) \`${hot}\``;
   });
 }
 
-// 格式化百度热搜
-function formatBaidu(data, maxTitleLen, itemsCount) {
+function formatBaidu(data) {
   if (!data?.data?.length) return [];
-  return data.data.slice(0, itemsCount).map((item, i) => {
+  return data.data.slice(0, itemsPerPlatform).map((item, i) => {
     const hot = item.score_desc || '';
     return `**${i + 1}.** [${item.title}](${item.url}) \`${hot}\``;
   });
 }
 
-// 格式化B站热门
-function formatBili(data, maxTitleLen, itemsCount) {
+function formatBili(data) {
   if (!data?.data?.length) return [];
-  return data.data.slice(0, itemsCount).map((item, i) => {
+  return data.data.slice(0, itemsPerPlatform).map((item, i) => {
     const title = item.title.length > maxTitleLen ? item.title.slice(0, maxTitleLen) + '...' : item.title;
     return `**${i + 1}.** [${title}](${item.link})`;
   });
 }
 
-// 主函数
-async function main() {
-  console.log('🚀 开始获取热搜数据...\n');
-  console.log(`📍 配置文件: ${configPath}`);
-  console.log(`📍 Discord 子区: ${THREAD_ID}`);
-  console.log(`📍 启用平台: ${enabledPlatforms.map(p => p.name).join(', ')}\n`);
+function formatDouyin(data) {
+  if (!data?.data?.length) return [];
+  return data.data.slice(0, itemsPerPlatform).map((item, i) => {
+    const title = (item.title || item.word || '').slice(0, maxTitleLen);
+    const hot = item.hot_value ? `${(item.hot_value / 10000).toFixed(0)}万` : '';
+    return `**${i + 1}.** ${title}${hot ? ` \`${hot}\`` : ''}`;
+  });
+}
 
-  const date = new Date();
-  const dateStr = date.toLocaleDateString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
+function formatToutiao(data) {
+  if (!data?.data?.length) return [];
+  return data.data.slice(0, itemsPerPlatform).map((item, i) => {
+    const title = (item.title || '').slice(0, maxTitleLen);
+    return `**${i + 1}.** ${title}`;
+  });
+}
+
+const formatters = {
+  'weibo': formatWeibo,
+  'zhihu': formatZhihu,
+  'baidu/hot': formatBaidu,
+  'bili': formatBili,
+  'douyin': formatDouyin,
+  'toutiao': formatToutiao,
+};
+
+async function main() {
+  console.error('🚀 开始获取热搜数据...');
+  console.error(`📍 启用平台: ${enabledPlatforms.map(p => p.name).join(', ')}`);
+
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    weekday: 'long',
     timeZone: 'Asia/Shanghai'
   });
 
-  const itemsPerPlatform = config.display.itemsPerPlatform;
-  const maxTitleLen = config.display.maxTitleLength;
-  const showDivider = config.display.showDivider;
-
   let message = `📅 **${dateStr}** 每日热搜速览\n\n`;
+  let successCount = 0;
+  let failCount = 0;
 
   for (const platform of enabledPlatforms) {
-    console.log(`📡 获取 ${platform.name}...`);
+    console.error(`📡 ${platform.name}...`);
     try {
       const url = `${API_BASE}/${platform.key}`;
       const data = await fetch(url);
-      
-      let lines = [];
-      switch (platform.key) {
-        case 'weibo':
-          lines = formatWeibo(data, maxTitleLen, itemsPerPlatform);
-          break;
-        case 'zhihu':
-          lines = formatZhihu(data, maxTitleLen, itemsPerPlatform);
-          break;
-        case 'baidu/hot':
-          lines = formatBaidu(data, maxTitleLen, itemsPerPlatform);
-          break;
-        case 'bili':
-          lines = formatBili(data, maxTitleLen, itemsPerPlatform);
-          break;
-      }
+      const formatter = formatters[platform.key];
+      const lines = formatter ? formatter(data) : [];
 
       if (lines.length > 0) {
-        message += `**${platform.emoji} ${platform.name} TOP ${itemsPerPlatform}**\n`;
-        message += lines.join('\n') + '\n';
-        if (showDivider) {
-          message += '\n';
-        }
+        message += `**${platform.emoji} ${platform.name} TOP ${lines.length}**\n`;
+        message += lines.join('\n') + '\n\n';
+        successCount++;
       } else {
-        console.log(`⚠️ ${platform.name} 返回空数据`);
+        console.error(`⚠️ ${platform.name} 返回空数据`);
+        failCount++;
       }
     } catch (e) {
-      console.error(`❌ ${platform.name} 获取失败:`, e.message);
-      message += `**${platform.emoji} ${platform.name}**\n`;
-      message += `⚠️ 暂时无法获取数据\n\n`;
+      console.error(`❌ ${platform.name} 失败: ${e.message}`);
+      failCount++;
+      // 静默跳过失败平台，不污染输出
     }
   }
 
-  message = message.trimEnd() + '\n\n---\n_由 OpenClaw 自动推送_';
+  message = message.trimEnd();
+  message += `\n\n---\n_共 ${successCount} 个平台${failCount > 0 ? `，${failCount} 个获取失败` : ''} · OpenClaw 自动推送_`;
 
-  console.log('\n📄 生成的消息:');
-  console.log('─'.repeat(40));
+  // stdout 输出最终消息（供 agent 读取）
   console.log(message);
-  console.log('─'.repeat(40));
 
-  // 输出到文件供 message tool 读取
+  // 同时保存到文件备份
   const outputPath = '/tmp/hot-topics-message.md';
   fs.writeFileSync(outputPath, message);
-  console.log(`\n✅ 消息已保存到: ${outputPath}`);
-  console.log(`📍 Discord 子区 ID: ${THREAD_ID}`);
-
-  return { message, threadId: THREAD_ID };
+  console.error(`\n✅ 完成: ${successCount} 成功, ${failCount} 失败`);
+  console.error(`📍 备份: ${outputPath}`);
 }
 
-main().catch(console.error);
+main().catch(e => {
+  console.error('❌ 脚本异常:', e.message);
+  process.exit(1);
+});
