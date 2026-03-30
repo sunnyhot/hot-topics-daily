@@ -81,7 +81,8 @@ function formatDouyin(data) {
   return data.data.slice(0, itemsPerPlatform).map((item, i) => {
     const title = (item.title || item.word || '').slice(0, maxTitleLen);
     const hot = item.hot_value ? `${(item.hot_value / 10000).toFixed(0)}万` : '';
-    return `**${i + 1}.** ${title}${hot ? ` \`${hot}\`` : ''}`;
+    const link = item.link ? `[${title}](${item.link})` : title;
+    return `**${i + 1}.** ${link}${hot ? ` \`${hot}\`` : ''}`;
   });
 }
 
@@ -89,7 +90,8 @@ function formatToutiao(data) {
   if (!data?.data?.length) return [];
   return data.data.slice(0, itemsPerPlatform).map((item, i) => {
     const title = (item.title || '').slice(0, maxTitleLen);
-    return `**${i + 1}.** ${title}`;
+    const link = item.link ? `[${title}](${item.link})` : title;
+    return `**${i + 1}.** ${link}`;
   });
 }
 
@@ -143,13 +145,50 @@ async function main() {
   message = message.trimEnd();
   message += `\n\n---\n_共 ${successCount} 个平台${failCount > 0 ? `，${failCount} 个获取失败` : ''} · OpenClaw 自动推送_`;
 
+  // Discord 2000 字符限制，自动拆分
+  const MAX_LEN = 1900;
+  const parts = [];
+  if (message.length <= MAX_LEN) {
+    parts.push(message);
+  } else {
+    // 按平台段落拆分
+    let current = '';
+    const lines = message.split('\n');
+    for (const line of lines) {
+      if ((current + '\n' + line).length > MAX_LEN && current.length > 0) {
+        parts.push(current.trimEnd());
+        current = line;
+      } else {
+        current += (current ? '\n' : '') + line;
+      }
+    }
+    if (current.trimEnd()) parts.push(current.trimEnd());
+    // 加续接标记
+    if (parts.length > 1) {
+      parts[0] += '\n\n*(continued)*';
+      for (let j = 1; j < parts.length; j++) {
+        parts[j] = '*(continued from previous)*\n\n' + parts[j];
+      }
+    }
+  }
+
   // stdout 输出最终消息（供 agent 读取）
-  console.log(message);
+  // 如果只有一条，直接输出
+  if (parts.length === 1) {
+    console.log(parts[0]);
+  } else {
+    // 多条消息用特殊标记分隔，供 agent 逐条发送
+    for (let j = 0; j < parts.length; j++) {
+      console.log(`--- PART ${j + 1}/${parts.length} ---`);
+      console.log(parts[j]);
+    }
+  }
 
   // 同时保存到文件备份
   const outputPath = '/tmp/hot-topics-message.md';
-  fs.writeFileSync(outputPath, message);
+  fs.writeFileSync(outputPath, parts.join('\n\n'));
   console.error(`\n✅ 完成: ${successCount} 成功, ${failCount} 失败`);
+  if (parts.length > 1) console.error(`📍 消息拆分为 ${parts.length} 部分`);
   console.error(`📍 备份: ${outputPath}`);
 }
 
